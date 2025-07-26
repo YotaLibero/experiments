@@ -1,0 +1,20 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg
+*.egg-info/
+dist/
+build/
+
+# Virtual environments
+.venv/
+venv/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# VSCode / PyCharm
+.idea/
+*.iml
+*.log
+.DS_Store
