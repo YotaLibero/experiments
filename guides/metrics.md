@@ -18,3 +18,4 @@ Object : equals()
 ArrayList : Object[] elementData
 ArrayList : size()
 ```
+
