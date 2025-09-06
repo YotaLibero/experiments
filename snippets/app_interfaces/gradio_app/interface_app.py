@@ -5,7 +5,7 @@ import numpy as np
 import time
 import threading
 import random
-from datetime import datetime
+from datetime import datetime, date
 import matplotlib
 matplotlib.use('Agg')  # Устанавливаем backend перед созданием графиков
 import matplotlib.pyplot as plt
@@ -30,41 +30,36 @@ class InterfaceApp:
         # Запускаем фоновый поток
         self.updater.start()
 
-
     def build_interface(self):
         """Создает интерфейс Gradio"""
         with gr.Blocks() as demo:
             # ---------- Верхняя строка ----------
             with gr.Row():
-                category_id = gr.Dropdown(choices=[2, 5], value=2, label="Category_ID")                     # номер ванны
+                category_id = gr.Dropdown(choices=['choose category', '101', '202'], label="Category")                     # номер категории
                 calendar_input = gr.DateTime(
                                         label="Календарь",
                                         timezone="UTC",
-                                        type="datetime", 
-                                        value=datetime(2025, 9, 2)
+                                        type="string", 
+                                        value=datetime.now().strftime("%Y-%m-%d %H:%M:%S") #.date().isoformat() # type = str : строка формата ISO 8601 "%Y-%m-%d"
                                         )
                 # Используем строковые представления дат для Dropdown
-                datetime_id = gr.Dropdown(
-                    choices=self.data_provider.get_datetime_choices(2), 
-                    value=self.data_provider.get_datetime_choices(2)[0], 
-                    label="DateTime"
-                ) 
-                event_id = gr.Dropdown(choices=[523, 524], value=523, label="Event_ID")
-                record_index = gr.Number(label="Record Index", value=3)
+                datetime_id = gr.Dropdown(choices=[], label='DateTime') # type = str : строка формата ISO 8601 "%Y-%m-%d %H:%M:%S"
+                event_id = gr.Dropdown(choices=[''], label="Event_ID")
+                record_index = gr.Number(label="Record Index", )
 
             # ---------- Левая колонка ----------
             with gr.Row():
                 with gr.Column(scale=1, min_width=300):
                     obj_idx = gr.Radio(
-                        ["OBJ1", "OBJ2", "OBJ3"], label="Object index", value="OBJ1T"
+                        ["OBJ1", "OBJ2", "OBJ3"], label="Object index", value="OBJ1"
                     )
                     start_point = gr.Slider(
                         minimum=200, maximum=4000, step=1, value=2400,
-                        label="start point"
+                        label="Start Point"
                     )
                     end_point = gr.Slider(
                         minimum=200, maximum=4000, step=1, value=2400,
-                        label="end point"
+                        label="End Point"
                     )
                     with gr.Row():
                         btn_prev = gr.Button("Prev")
@@ -72,98 +67,81 @@ class InterfaceApp:
                     with gr.Row():
                         btn_save = gr.Button("Save to Database")
                     with gr.Row():
-                        btn_save = gr.Button("Find Vector")
+                        btn_find = gr.Button("Find Vector")
                     saved_lbl = gr.Label(value="Changes saved", color="green")
-                    data_frame = gr.Dataframe(self.data_provider.get_example_df(2), label="Description Charts")
-                    graph_for_check = gr.Checkbox(value=False, label="Any questions?")
+                    data_frame = gr.Dataframe(label="PeakParams")
+                    graph_for_check = gr.Checkbox(value=False, label="Вопросы по графику")
                 # ---------- Правая колонка ----------
                 with gr.Column(scale=3, min_width=300):
+                    # Заменяем Textbox на Plot для отображения графиков
                     plot_output = gr.Plot(label="Графики данных", format="png")  # Это теперь график
                     # plot_output = gr.Image(label="Графики данных", type="pil")
 
             # Привязываем события
             self.setupevent_handlers(demo, category_id, calendar_input, datetime_id, event_id, 
-                                     obj_idx, start_point, end_point, 
+                                     obj_idx, start_point, end_point, data_frame,
                                      record_index, plot_output)
 
             return demo
 
-    def setupevent_handlers(self, demo, category_id, calendar_input, datetime_id, event_id, obj_idx, start_point, end_point, record_index, plot_output):
+    def setupevent_handlers(self, demo, category_id, calendar_input, datetime_id, event_id, 
+                            obj_idx, start_point, end_point, data_frame,
+                            record_index, plot_output):
         """Настройка обработчиков событий"""
 
-        # Функция для обновления базовых компонентов (взаимозаменяемые)
-        def update_basic_components(category, event_id_value, datetime_id_value):
-            """Обновляет базовые компоненты (event_id и datetime_id)"""
-            # Получаем данные для выбранной ванны
-            if int(category) == 2:
-                record_id = 0
-                dt_value = "2025-08-21"
-                calendar = datetime(2025, 8, 25)
-                # Обновляем список дат и событий
-                datetime_choices = self.data_provider.get_datetime_choices(2)
-                event_choices = self.data_provider.get_event_choices(2)
-            elif int(category) == 5:
-                record_id = 1
-                dt_value = "2025-07-21"
-                calendar = datetime(2025, 7, 10)
-                # Обновляем список дат и событий
-                datetime_choices = self.data_provider.get_datetime_choices(5)
-                event_choices = self.data_provider.get_event_choices(5)
-            else:
-                record_id = -1
-                dt_value = "1666-01-01"
-                calendar = datetime(1666, 1, 1)
-                # Обновляем список дат и событий
-                datetime_choices = self.data_provider.get_datetime_choices()
-                event_choices = self.data_provider.get_event_choices()
+        def update_with_pot(category):
+            if (str(category) == '101') or (str(category) == '202'):
+                row_values = self.data_provider.get_exist_last_row(category_id = int(category))
+                print(type(row_values), row_values)
+                calendar = row_values['datetime']
+                if row_values is not None:
+                    dt_value = row_values['datetime'].strftime("%Y-%m-%d %H:%M:%S")
+                    record_id = int(row_values['record'])
+                    event_id = str(row_values['event_id'])
+                    datetime_choices = sorted(self.data_provider.get_datetime_choices(category_id=category, select_dt_id=calendar.date().isoformat()), reverse=True)
+                    datetime_choices = datetime_choices if datetime_choices is not None else ['']
+                    event_choices = sorted(self.data_provider.get_event_choices(category_id=category, select_dt_id=calendar.date().isoformat()), reverse=True)
+                    event_choices = event_choices if event_choices is not None else ['']
+                    return (
+                        gr.update(choices=event_choices, value=event_id),
+                        gr.update(choices=datetime_choices, value=dt_value),
+                        record_id,
+                        dt_value,
+                        row_values['datetime'].strftime("%Y-%m-%d %H:%M:%S")
+                    )
+                else:
+                    dt_value = ''
+                    record_id = 0
+                    event_id = ''
+                    datetime_choices = ['']
+                    event_choices = ['']
 
-            # Обновляем компоненты
-            return (
-                gr.update(choices=event_choices, value=event_id_value if event_id_value in event_choices else event_choices[0] if event_choices else None),
-                gr.update(choices=datetime_choices, value=datetime_id_value if datetime_id_value in datetime_choices else datetime_choices[0] if datetime_choices else None),
-                record_id,
-                dt_value,
-                calendar
-            )
+                    return (
+                        gr.update(choices=event_choices, value=event_id),
+                        gr.update(choices=datetime_choices, value=dt_value),
+                        record_id,
+                        dt_value,
+                        calendar.strftime("%Y-%m-%d %H:%M:%S")
+                    )
 
-        # Функция для обновления компонентов с учетом сортировки по убыванию
-        def update_with_sorting(category):
-            """Обновляет компоненты, беря первый элемент из отсортированного по убыванию списка"""
-            # Получаем данные для выбранной ванны
-            if int(category) == 2:
-                record_id = 0
-                dt_value = "2025-08-21 00:00:00"
-                calendar = datetime(2025, 8, 25, 0, 0, 0)
+            if str(category) == 'choose category':
+                record_id = ""
+                dt_value = ""
+                calendar = datetime.now().strftime("%Y-%m-%d %H:%M:%S") #datetime.now().date().isoformat()
                 # Берем отсортированный по убыванию список дат
-                datetime_choices = sorted(self.data_provider.get_datetime_choices(2), reverse=True)
-                event_choices = sorted(self.data_provider.get_event_choices(2), reverse=True)
-            elif int(category) == 5:
-                record_id = 1
-                dt_value = "2025-07-21 00:00:00"
-                calendar = datetime(2025, 7, 21, 0, 0, 0)
-                # Берем отсортированный по убыванию список дат
-                datetime_choices = sorted(self.data_provider.get_datetime_choices(5), reverse=True)
-                event_choices = sorted(self.data_provider.get_event_choices(5), reverse=True)
-            else:
-                record_id = -1
-                dt_value = "1666-01-01 00:00:00"
-                calendar = datetime(1666, 1, 1, 0, 0, 0)
-                # Берем отсортированный по убыванию список дат
-                datetime_choices = sorted(self.data_provider.get_datetime_choices(), reverse=True)
-                event_choices = sorted(self.data_provider.get_event_choices(), reverse=True)
-
-            # Обновляем компоненты
-            return (
-                gr.update(choices=event_choices, value=event_choices[0] if event_choices else None),
-                gr.update(choices=datetime_choices, value=datetime_choices[0] if datetime_choices else None),
-                record_id,
-                dt_value,
-                calendar
-            )
+                datetime_choices = ['']
+                event_choices = ['']
+                return (
+                    gr.update(choices=event_choices, value=event_choices[0] if event_choices else ''),
+                    gr.update(choices=datetime_choices, value=datetime_choices[0] if datetime_choices else ''),
+                    record_id,
+                    dt_value,
+                    calendar
+                )
 
         # Обработчик изменения category_id - обновляет все компоненты с сортировкой по убыванию
         category_id.change(
-            fn=update_with_sorting,
+            fn=update_with_pot,
             inputs=category_id,
             outputs=[event_id, datetime_id, record_index, calendar_input, calendar_input],  # calendar_input дважды для calendar
         )
@@ -171,56 +149,69 @@ class InterfaceApp:
         calendar_input.change(
             fn=self.ui_controller.edit_calendar,
             inputs=[category_id, calendar_input],
-            outputs=[calendar_input, calendar_input, datetime_id, event_id, record_index], # calendar_input дважды для calendar
+            outputs=[calendar_input, calendar_input, event_id, record_index, datetime_id],
         )
 
         # Обработчик изменения event_id - обновляет только базовые компоненты
         event_id.change(
-            fn=lambda category, event_val, datetime_val: update_basic_components(category, event_val, datetime_val),
-            inputs=[category_id, event_id, datetime_id],
-            outputs=[event_id, datetime_id, record_index, calendar_input, calendar_input],  # calendar_input дважды для calendar
-        )
-
-        # Обработчик изменения datetime_id - обновляет только базовые компоненты
+            fn=self.ui_controller.edit_event_id,
+            inputs=[category_id, event_id],
+            outputs=[datetime_id, event_id, record_index, obj_idx, data_frame, start_point, end_point],  # calendar_input дважды для calendar        
+            )
+            # Обработчик изменения datetime_id - обновляет только базовые компоненты
         datetime_id.change(
-            fn=lambda category, event_val, datetime_val: update_basic_components(category, event_val, datetime_val),
-            inputs=[category_id, event_id, datetime_id],
-            outputs=[event_id, datetime_id, record_index, calendar_input, calendar_input],  # calendar_input дважды для calendar
+            fn=self.ui_controller.edit_datetime_id,
+            inputs=[category_id, datetime_id],
+            outputs=[datetime_id, event_id, record_index, obj_idx, data_frame, start_point, end_point],  # calendar_input дважды для calendar        
+            )
+
+        # Обновление графика при изменении категории
+        category_id.change(
+            fn=PlotGenerator.create_plot,    #PlotGenerator.get_existing_image,  #PlotGenerator.create_plot,
+            inputs=[category_id, obj_idx, start_point, end_point],
+            outputs=plot_output
         )
 
-        # Обновление графика при изменении ванны
-        category_id.change(
-            fn=PlotGenerator.create_plot,               # PlotGenerator.get_existing_image,  # PlotGenerator.create_plot,
+        # Обновление графика при изменении номера замера
+        event_id.change(
+            fn=PlotGenerator.create_plot,    #PlotGenerator.get_existing_image,  #PlotGenerator.create_plot,
+            inputs=[category_id, obj_idx, start_point, end_point],
+            outputs=plot_output
+        )
+
+        # Обновление графика при изменении времени замера
+        datetime_id.change(
+            fn=PlotGenerator.create_plot,    #PlotGenerator.get_existing_image,  #PlotGenerator.create_plot,
             inputs=[category_id, obj_idx, start_point, end_point],
             outputs=plot_output
         )
 
         # Обновление графика при изменении параметров
         obj_idx.change(
-            fn=PlotGenerator.get_existing_image,  #
+            fn=PlotGenerator.create_plot,    #PlotGenerator.get_existing_image,  #PlotGenerator.create_plot,
             inputs=[category_id, obj_idx, start_point, end_point],
             outputs=plot_output
         )
 
         start_point.change(
-            fn=PlotGenerator.create_plot,               # PlotGenerator.get_existing_image,  #PlotGenerator.create_plot,
+            fn=PlotGenerator.create_plot,    #PlotGenerator.get_existing_image,  #PlotGenerator.create_plot,
             inputs=[category_id, obj_idx, start_point, end_point],
             outputs=plot_output
         )
 
         end_point.change(
-            fn=PlotGenerator.create_plot,               # PlotGenerator.get_existing_image,  #PlotGenerator.create_plot,
+            fn=PlotGenerator.create_plot,    #PlotGenerator.get_existing_image,  #PlotGenerator.create_plot,
             inputs=[category_id, obj_idx, start_point, end_point],
             outputs=plot_output
         )
 
         # Таймер, который каждые 10 сек обновляет список Dropdown
-        timer = gr.Timer(value=10)          # интервал в секундах
-        timer.tick(
-                fn=self.ui_controller.refresh_dropdown,
-                inputs=[category_id, event_id],          # получаем текущий выбор
-                outputs=event_id,
-            )
+        # timer = gr.Timer(value=10)          # интервал в секундах
+        # timer.tick(
+        #         fn=self.ui_controller.refresh_dropdown,
+        #         inputs=[category_id, event_id],          # получаем текущий выбор
+        #         outputs=event_id,
+        #     )
 
         # При выборе элемента выводим его в отдельный textbox
         # Используем отдельный компонент для вывода информации

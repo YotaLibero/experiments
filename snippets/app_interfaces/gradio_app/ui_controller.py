@@ -10,66 +10,33 @@ import matplotlib
 matplotlib.use('Agg')  # Устанавливаем backend перед созданием графиков
 import matplotlib.pyplot as plt
 
-# --------------------------------------------------------------
-# 3.  Класс управления интерфейсом
-# --------------------------------------------------------------
 class UIController:
     def __init__(self, data_provider, updater):
         self.data_provider = data_provider
         self.updater = updater
 
     def greet(self, request: gr.Request):
-        """Заполняет поле category_ID из query‑строки (если есть)."""
+        """Заполняет поле Pot_ID из query‑строки (если есть)."""
         query = dict(request.query_params)
         return int(query.get("name", 0))
 
-    def edit_category_id(self, category):
-        if int(category) == 2:
-            record_id = 0
-            calendar = datetime(2025, 8, 25)
-        elif int(category) == 5:
-            record_id = 1
-            calendar = datetime(2025, 7, 10)
-        else:
-            record_id = -1
-            calendar = datetime(1666, 1, 1)
-        return category, calendar, self.get_updated_dropdown(category), record_id, self.get_updated_dropdown_dt(category)
-
-    def category_s_change(self, category):
-        """Обрабатывает изменение номера ванны."""
-        if int(category) == 2:
-            rec = 0
-            dt = "2025-08-21"
-        elif int(category) == 5:
-            rec = 1
-            dt = "2025-07-21"
-        else:
-            rec = -1
-            dt = "2025-01-01"
-        # После смены ванны сразу выводим актуальный список
-        return category, rec, dt, self.get_updated_dropdown(category)
-
-    def get_updated_dropdown(self, category, selected_choice=None) -> gr.update:
+    def get_updated_dropdown(self, category, curr_choice=None) -> gr.update:
         """Возвращает актуальный набор вариантов для Dropdown."""
         choices = self.updater.get_choices()
-        if selected_choice == None:
+        if curr_choice is None:
             value = choices[0] if choices else None
-            print('нет значения для event_id')
         else:
-            value = selected_choice
-            print('есть значение для event_id')
-        label = f"Ивенты для {category} ванны"
+            value = curr_choice
+        label = f"Ивенты для {category} категории"
         return gr.update(choices=choices, value=value, label=label)
 
-    def get_updated_dropdown_dt(self, category, selected_choice=None) -> gr.update:
+    def get_updated_dropdown_dt(self, category, curr_choice=None) -> gr.update:
         """Возвращает актуальный набор вариантов для Dropdown."""
         choices = self.updater.get_dt_choices()
-        if selected_choice == None:
+        if curr_choice is None:
             value = choices[0] if choices else None
-            print('нет значения для dt_id')
         else:
-            value = selected_choice
-            print('есть значение для dt_id')
+            value = curr_choice
         label = f"Datetime for {category} category"
         return gr.update(choices=choices, value=value, label=label)
 
@@ -85,7 +52,7 @@ class UIController:
             value = current_choice
         else:
             value = choices[0] if choices else None
-        label = f"Ивенты для {category} ванны"
+        label = f"Ивенты для {category} категории"
         return gr.update(choices=choices, value=value, label=label)
 
     def show_selected(self, choice):
@@ -104,13 +71,24 @@ class UIController:
         return dt.date()
 
     def edit_calendar(self, category, calendar): # category=str и calendar=str
+        print("✅ calendar:", calendar)
         try:
             # Проверяем, что calendar не None
             if calendar is None:
                 print("Дата не выбрана")
                 select_date_calendar = None
             else:
-                select_date_calendar = datetime.fromisoformat(calendar.replace('Z', '+00:00'))
+                # Обрабатываем разные форматы даты
+                if isinstance(calendar, str):
+                    # Если строка - пытаемся парсить
+                    if 'T' in calendar:
+                        select_date_calendar = datetime.strptime(calendar, "%Y-%m-%d %H:%M:%S") # calendar.strftime("%Y-%m-%d %H:%M:%S")
+                    else:
+                        select_date_calendar = datetime.strptime(calendar, "%Y-%m-%d %H:%M:%S")
+                else:
+                    select_date_calendar = calendar
+
+                # Получаем только дату
                 select_date_calendar = select_date_calendar.date().isoformat()
         except (ValueError, AttributeError) as e:
             print(f"формат даты определён некорректно. Ожидалось 'ГГГГ-ММ-ДД'. Ошибка: {e}")
@@ -118,66 +96,144 @@ class UIController:
 
         # Инициализация значений по умолчанию
         event_id = ''
-        record_id = -1
+        record_id = 0
         dt_id = ''
+        print("✅ select_date_calendar:", select_date_calendar)
 
-        if (int(category) == 2) or (int(category) == 5):
-            category_data = self.data_provider.get_van_records(int(category))
+        if (int(category) == 101) or (int(category) == 202):
+            category_data = self.data_provider.get_all_data_on_pot(category=int(category))
             if category_data is None or len(category_data) == 0:
-                print("Данные для ванны отсутствуют!")
-                return dt_id, calendar.date().isoformat() if calendar else None, '', -1, -1
+                print("🛑 Данные для категории отсутствуют!")
+                # Возвращаем только calendar и dt_id, остальные оставляем как есть
+                return dt_id, calendar, '', 0, ''
 
             # Если дата не выбрана, используем последнюю дату
             if select_date_calendar is None:
                 if category_data:
-                    select_date_calendar = datetime.strptime(category_data[-1]['datetime'], "%Y-%m-%d %H:%M:%S").date().isoformat()
+                    select_date_calendar = category_data[-1]['datetime'].date().isoformat()
                 else:
-                    print("Нет данных для определения последней даты")
-                    return dt_id, calendar.date().isoformat() if calendar else None, '', -1, -1
+                    print("🛑 Нет данных для определения последней даты")
+                    return dt_id, calendar, '', 0, ''
 
             # Проверяем существование записи
-            exists = any(datetime.strptime(item['datetime'], "%Y-%m-%d %H:%M:%S").date().isoformat() == select_date_calendar for item in category_data)
+            exists = self.data_provider.get_exist_last_row(category_id=int(category), select_dt_id=select_date_calendar)
             if not exists:
-                print(f"Записей на {select_date_calendar} не найдено")
-                return dt_id, calendar.date().isoformat() if calendar else None, '', -1, -1
+                print(f"🛑 Записей на {select_date_calendar} не найдено")
+                return dt_id, calendar, '', 0, ''
             else:
                 # Находим все записи для выбранной даты и сортируем
-                dt_idxs = [item for item in category_data 
-                          if datetime.strptime(item['datetime'], "%Y-%m-%d %H:%M:%S").date().isoformat() == select_date_calendar]
-                dt_idxs = sorted(dt_idxs, key=lambda x: datetime.strptime(x['datetime'], "%Y-%m-%d %H:%M:%S"), reverse=True)
+                dt_id = self.data_provider.get_exist_last_row(category_id=int(category), select_dt_id=select_date_calendar)
+                event_id = str(dt_id['event_id'])
+                record_id = int(dt_id['record'])
 
-                if dt_idxs:
-                    dt_id = dt_idxs[0]  # Берем первую (самую позднюю) запись
-                    event_id = dt_id['event_id']
-                    record_id = dt_id['record']
+                # Обновляем datetime_id для соответствующей дате
+                datetime_choices = self.data_provider.get_datetime_choices(category_id=int(category), select_dt_id=dt_id['datetime'].date().isoformat())  # Исправлено: убран select_dt_id
+                datetime_id_update = gr.update(choices=datetime_choices, value=dt_id['datetime'].strftime("%Y-%m-%d %H:%M:%S"))
 
-                    return dt_id, calendar.date().isoformat() if calendar else None, \
-                           self.get_updated_dropdown_dt(category, dt_id), \
-                           self.get_updated_dropdown(category, event_id), \
-                           record_id
-                else:
-                    return dt_id, calendar.date().isoformat() if calendar else None, '', -1, -1
+                # Обновляем event_id для соответствующей дате
+                event_choices = self.data_provider.get_event_choices(category_id=int(category), select_dt_id=dt_id['datetime'].date().isoformat())  # Исправлено: убран select_dt_id
+                event_id_update = gr.update(choices=event_choices, value=event_id)
+
+                # Возвращаем только нужные компоненты
+                return dt_id['datetime'].strftime("%Y-%m-%d %H:%M:%S"), calendar, event_id_update, gr.update(value=record_id), datetime_id_update
         else:
-            print("Такой ванны нет либо данные по существующей ванне отсутствуют!")
-            return dt_id, calendar.date().isoformat() if calendar else None, '', -1, -1
+            print("🛑 Такой категории нет либо данные по существующей категории отсутствуют!")
+            return '', calendar, '', 0, ''
 
-    # def edit_event_id(self):
-    #     pass
-    #     return event, dt_id, record_id, obj_id, temp_0, solid, df_objs, plots
+    def edit_event_id(self, category, event_id):
+        """Обновление выбранного event_id и связанных параметров"""
+        if (str(category) == '101') or(str(category) == '202'):
+            # Находим запись по event_id
+            record = self.data_provider.get_row_dataset_on_event_id(category=int(category), event=int(event_id))
+            if record:
+                # Получаем параметры для события
+                start_point = record['start_point']
+                end_point = record['end_point']
 
-    # def edit_dt_id(self):
-    #     pass
-    #     return dt_id, event, record_id, obj_id, temp_0, solid, df_objs, plots
+                # Получаем DataFrame для объекта
+                df_objs = record['object_index']
 
-    # def edit_obj_idx(self):
-    #     pass
-    #     return obj_id, temp_0, solid, df_objs, plots
+                # Обновляем все значения
+                return record['datetime'].strftime("%Y-%m-%d %H:%M:%S"), str(event_id), record['record'], 'OBJ1', df_objs, start_point, end_point
+            else:
+                # Если запись не найдена, возвращаем значения по умолчанию
+                return "", str(event_id), -1, 'OBJ1', None, 2400, 2300
+        else:
+            # Если запись не найдена, возвращаем значения по умолчанию
+            return "", str(event_id), -1, 'OBJ1', None, 2400, 2300 # ['OBJ1', 'OBJ2', 'OBJ3']
 
-    # def edit_temp0(self):
-    #     pass
-    #     return temp_0, solid, df_objs, plots
+    def edit_datetime_id(self, category, dt_id):
+        """Обновление выбранного datetime_id и связанных параметров"""
+        if (str(category) == '101') or(str(category) == '202'):
+            # Находим запись по event_id
+            record = self.data_provider.get_row_dataset_on_datetime_id(category=int(category), dt_id=dt_id)
+            if record:
+                # Получаем параметры для события
+                start_point = record['start_point']
+                end_point = record['end_point']
 
-    # def edit_solidus(self):
-    #     pass
-    #     return solid, temp_0, df_objs, plots
-    
+                # Получаем DataFrame для объекта
+                df_objs = record['object_index']
+
+                # Обновляем все значения
+                return record['datetime'].strftime("%Y-%m-%d %H:%M:%S"), str(record['event_id']), record['record'], 'OBJ1', df_objs, start_point, end_point
+            else:
+                # Если запись не найдена, возвращаем значения по умолчанию
+                return dt_id, '', -1, 'OBJ1', None, 2400, 2300
+        else:
+            # Если запись не найдена, возвращаем значения по умолчанию
+            return dt_id, '', -1, 'OBJ1', None, 2400, 2300 # ['OBJ1', 'OBJ2', 'OBJ3']
+
+    def edit_obj_idx(self, category, obj_idx, event_id):
+        """Обновление выбранного obj_idx и связанных параметров"""
+        # Находим запись по event_id
+        category_data = self.data_provider.get_van_records(int(category))
+        record = None
+        for item in category_data:
+            if item['event_id'] == event_id:
+                record = item
+                break
+
+        if record:
+            # Получаем DataFrame для объекта
+            df_objs = record['object_index']
+
+            # Обновляем все значения
+            return obj_idx, df_objs, None
+        else:
+            # Если запись не найдена, возвращаем значения по умолчанию
+            return obj_idx, self.data_provider.get_example_df(category), None
+
+    def edit_start_point(self, category, start_point, event_id):
+        """Обновление значения start_point"""
+        # Находим запись по event_id
+        category_data = self.data_provider.get_van_records(int(category))
+        record = None
+        for item in category_data:
+            if item['event_id'] == event_id:
+                record = item
+                break
+
+        if record:
+            # Обновляем значение start_point
+            return start_point, None
+        else:
+            # Если запись не найдена, возвращаем значение по умолчанию
+            return 2400, None
+
+    def edit_end_point(self, category, end_point, event_id):
+        """Обновление значения end_point"""
+        # Находим запись по event_id
+        category_data = self.data_provider.get_van_records(int(category))
+        record = None
+        for item in category_data:
+            if item['event_id'] == event_id:
+                record = item
+                break
+
+        if record:
+            # Обновляем значение end_point
+            return end_point, None
+        else:
+            # Если запись не найдена, возвращаем значение по умолчанию
+            return 2300, None
