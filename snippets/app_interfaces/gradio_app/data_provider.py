@@ -128,14 +128,14 @@ class DataProvider:
             ],
         }
 
-    def get_all_data_on_pot(self, category=int):
+    def get_all_data_on_category(self, category=int):
         """Получить все данные по категории"""
         return self.database_category[category] if (int(category) == 101) or (int(category) == 202) else None
 
-    def get_row_dataset_on_pot(self, category=int, row_number=int):
+    def get_row_dataset_on_category(self, category=int, row_number=int):
         """Получить строку данных по категории и номеру"""
         try:
-            category_data = self.get_all_data_on_pot(category=int(category))
+            category_data = self.get_all_data_on_category(category=int(category))
             return category_data[row_number] if 0 <= row_number < len(category_data) else None
         except Exception as exp:
             print(f'EXCEPTION: {exp}')
@@ -146,7 +146,7 @@ class DataProvider:
         # print(f'❌ event {type(event)} - {event}')
         """Получить строку данных по категории и номеру"""
         try:
-            category_data = self.get_all_data_on_pot(category=int(category))
+            category_data = self.get_all_data_on_category(category=int(category))
             row = [item for item in category_data 
                             if item['event_id'] == int(event)]
             return row[0]
@@ -160,7 +160,7 @@ class DataProvider:
         """Получить строку данных по категории и номеру"""
         # select_dt = datetime.strptime(dt_id, "%Y-%m-%d %H:%M:%S")
         try:
-            category_data = self.get_all_data_on_pot(category=int(category))
+            category_data = self.get_all_data_on_category(category=int(category))
             row = [item for item in category_data 
                             if item['datetime'].strftime("%Y-%m-%d %H:%M:%S") == dt_id]
             # print(f'❌ row[0] {type(row[0])} - {row[0]}')
@@ -172,12 +172,12 @@ class DataProvider:
     def get_exist_last_row(self, category_id=None, select_dt_id=None):
         """Получить список дат для категории"""
         if select_dt_id is not None:
-            category_data = self.get_all_data_on_pot(category=int(category_id))
+            category_data = self.get_all_data_on_category(category=int(category_id))
             dt_idxs = [item for item in category_data 
                             if item['datetime'].date().isoformat() == select_dt_id]
             dt_idxs = sorted(dt_idxs, key=lambda x: x['datetime'],  reverse=True)
         else:
-            category_data = self.get_all_data_on_pot(category=int(category_id))
+            category_data = self.get_all_data_on_category(category=int(category_id))
             select_dt_id = sorted(category_data, key=lambda x: x['datetime'], reverse=True)
             select_dt_id = select_dt_id[0]
             select_dt_id = select_dt_id['datetime'].date().isoformat()
@@ -189,7 +189,7 @@ class DataProvider:
     def get_datetime_choices(self, category_id=None, select_dt_id=None):
         """Получить список дат для категории"""
         if (str(category_id) == '101') or (str(category_id) == '202'):
-            category_data = self.get_all_data_on_pot(category=int(category_id))
+            category_data = self.get_all_data_on_category(category=int(category_id))
             dt_idxs = [item['datetime'].strftime("%Y-%m-%d %H:%M:%S") for item in category_data 
                             if item['datetime'].date().isoformat() == select_dt_id]
             return dt_idxs if len(dt_idxs) > 0 else [''] # list[str] or ['']
@@ -199,7 +199,7 @@ class DataProvider:
     def get_event_choices(self, category_id=None, select_dt_id=None, select_event_id=None):
         """Получить список событий для категории"""
         if (str(category_id) == '101') or (str(category_id) == '202'):
-            category_data = self.get_all_data_on_pot(category=int(category_id))
+            category_data = self.get_all_data_on_category(category=int(category_id))
             if (select_dt_id is None) and (select_event_id is not None):
                 dt_idxs = [str(item['event_id']) for item in category_data 
                                 if int(item['event_id']) == select_event_id]

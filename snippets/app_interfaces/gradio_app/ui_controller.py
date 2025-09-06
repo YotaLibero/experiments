@@ -101,7 +101,7 @@ class UIController:
         print("✅ select_date_calendar:", select_date_calendar)
 
         if (int(category) == 101) or (int(category) == 202):
-            category_data = self.data_provider.get_all_data_on_pot(category=int(category))
+            category_data = self.data_provider.get_all_data_on_category(category=int(category))
             if category_data is None or len(category_data) == 0:
                 print("🛑 Данные для категории отсутствуют!")
                 # Возвращаем только calendar и dt_id, остальные оставляем как есть
