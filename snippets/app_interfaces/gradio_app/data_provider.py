@@ -10,10 +10,6 @@ import matplotlib
 matplotlib.use('Agg')  # Устанавливаем backend перед созданием графиков
 import matplotlib.pyplot as plt
 
-# from plot_generator import PlotGenerator
-# from auto_dropdown_updater import AutoDropdownUpdater
-# from ui_controller import UIController
-# from dta_app import DTAApp
 # --------------------------------------------------------------
 # 1.  Класс заглушек данных (может быть заменен на реальное API)
 # --------------------------------------------------------------
