@@ -39,7 +39,7 @@ class InterfaceApp:
                 calendar_input = gr.DateTime(
                                         label="Календарь",
                                         timezone="UTC",
-                                        type="string", 
+                                        type="string", # очень важный компонент, который нужно указывать осторожно, потому что может возникнуть серьёзные проблемы с передачей calendar_input
                                         value=datetime.now().strftime("%Y-%m-%d %H:%M:%S") #.date().isoformat() # type = str : строка формата ISO 8601 "%Y-%m-%d"
                                         )
                 # Используем строковые представления дат для Dropdown
