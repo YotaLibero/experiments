@@ -124,6 +124,77 @@ def build_edge_index_from_similarity(sim, k=4, threshold=None):
         edge_weight = edge_weight / edge_weight.max()
     return edge_index, edge_weight
 
+
+# функция построения рёбер
+def build_edge_index_from_corr_matrix(corr,
+                                     k=4,
+                                     threshold=None,
+                                     keep_sign=False,
+                                     transform='abs',   # 'abs'|'linear'|'signed'
+                                     power=1.0,
+                                     alpha=1.0):
+    """
+    Build edge_index, edge_weight from correlation matrix.
+    - keep_sign: if True, preserve sign in weights (weights can be negative)
+    - transform:
+        'abs'    -> w = |corr|^power
+        'linear' -> w = ((corr + 1)/2)^power  (maps [-1,1] -> [0,1])
+        'signed' -> w = corr (optionally scaled)
+    - alpha: global multiplier for weights (float)
+    Returns: edge_index (2,E), edge_weight (E,)
+    """
+    Fi = corr.shape[0]
+    edges = []
+    weights = []
+    for i in range(Fi):
+        row = corr[i].copy()
+        row[i] = 0.0
+        idxs = np.argsort(-np.abs(row))
+        selected = []
+        for j in idxs:
+            if j == i:
+                continue
+            if threshold is not None and abs(row[j]) < threshold:
+                continue
+            selected.append(j)
+            if len(selected) >= k:
+                break
+        for j in selected:
+            w_raw = row[j]
+            if transform == 'abs':
+                w = (abs(w_raw) ** power) * alpha
+            elif transform == 'linear':
+                w = (((w_raw + 1.0) / 2.0) ** power) * alpha
+            elif transform == 'signed':
+                w = (w_raw ** power) * alpha
+            else:
+                # fallback: abs
+                w = (abs(w_raw) ** power) * alpha
+            # add directed edges both directions if you want symmetric info
+            edges.append((i, j))
+            weights.append(w)
+            # if you want symmetric, also add (j,i) with same weight; if using top-k per node we may already be adding both
+    if len(edges) == 0:
+        # fallback: fully connect small weights
+        for i in range(Fi):
+            for j in range(Fi):
+                if i != j:
+                    edges.append((i,j)); weights.append(0.1*alpha)
+    edge_index = torch.tensor(edges, dtype=torch.long).t().contiguous()
+    edge_weight = torch.tensor(weights, dtype=torch.float)
+    # Optionally normalize to [0,1] (if transform produced big values)
+    if edge_weight.numel() and edge_weight.max() > 0:
+        # keep sign if negative values allowed
+        if keep_sign:
+            # normalize magnitudes to [0,1], preserve sign
+            mags = edge_weight.abs()
+            mags = mags / mags.max()
+            edge_weight = mags * torch.sign(edge_weight)
+        else:
+            edge_weight = edge_weight / edge_weight.max()
+    return edge_index, edge_weight
+
+
 # ---------------------- Dataset ----------------------
 
 class TimeWindowsDataset(Dataset):
@@ -148,12 +219,57 @@ def collate_windows(batch):
 
 # ---------------------- Edge-aware GATConv ----------------------
 
+# class EdgeGATConv(MessagePassing):
+#     """Single-head edge-aware GAT-like convolution (MessagePassing).
+#     This class is intentionally simple for clarity and educational purposes.
+#     The raw attention e_ij is multiplied by edge_weight (if provided) before softmax.
+#     """
+#     def __init__(self, in_channels, out_channels, negative_slope=0.2, bias=True):
+#         super().__init__(aggr='add')
+#         self.lin = nn.Linear(in_channels, out_channels, bias=False)
+#         self.att = nn.Parameter(torch.Tensor(2 * out_channels))
+#         self.leaky_relu = nn.LeakyReLU(negative_slope)
+#         if bias:
+#             self.bias = nn.Parameter(torch.Tensor(out_channels))
+#         else:
+#             self.register_parameter('bias', None)
+#         self.reset_parameters()
+
+#     def reset_parameters(self):
+#         nn.init.xavier_uniform_(self.lin.weight)
+#         nn.init.xavier_uniform_(self.att.view(1, -1))
+#         if self.bias is not None:
+#             nn.init.zeros_(self.bias)
+
+#     def forward(self, x, edge_index, edge_weight=None):
+#         # x: (N, in_channels)
+#         x_l = self.lin(x)  # (N, out)
+#         row = edge_index[0]
+#         col = edge_index[1]
+#         x_row = x_l[row]
+#         x_col = x_l[col]
+#         feat_cat = torch.cat([x_row, x_col], dim=-1)
+#         e = (feat_cat * self.att).sum(dim=-1)
+#         if edge_weight is not None:
+#             ew = edge_weight.view(-1).to(e.dtype)
+#             e = e * ew
+#         alpha = softmax(self.leaky_relu(e), col)
+#         out = self.propagate(edge_index, x=x_l, alpha=alpha)
+#         if self.bias is not None:
+#             out = out + self.bias
+#         return out
+
+#     def message(self, x_j, alpha):
+#         return x_j * alpha.view(-1, 1)
+
+
 class EdgeGATConv(MessagePassing):
-    """Single-head edge-aware GAT-like convolution (MessagePassing).
-    This class is intentionally simple for clarity and educational purposes.
-    The raw attention e_ij is multiplied by edge_weight (if provided) before softmax.
-    """
-    def __init__(self, in_channels, out_channels, negative_slope=0.2, bias=True):
+    def __init__(self, in_channels, out_channels, negative_slope=0.2, bias=True, edge_mode='mul', edge_coef=1.0):
+        """
+        edge_mode: 'mul' — multiply raw attention by edge_weight
+                   'add' — add edge_bias (edge_coef * edge_weight) to raw attention
+        edge_coef: scalar factor (float) applied to edge_weight when mode='add'
+        """
         super().__init__(aggr='add')
         self.lin = nn.Linear(in_channels, out_channels, bias=False)
         self.att = nn.Parameter(torch.Tensor(2 * out_channels))
@@ -162,6 +278,8 @@ class EdgeGATConv(MessagePassing):
             self.bias = nn.Parameter(torch.Tensor(out_channels))
         else:
             self.register_parameter('bias', None)
+        self.edge_mode = edge_mode
+        self.edge_coef = float(edge_coef)
         self.reset_parameters()
 
     def reset_parameters(self):
@@ -171,17 +289,19 @@ class EdgeGATConv(MessagePassing):
             nn.init.zeros_(self.bias)
 
     def forward(self, x, edge_index, edge_weight=None):
-        # x: (N, in_channels)
-        x_l = self.lin(x)  # (N, out)
-        row = edge_index[0]
-        col = edge_index[1]
+        x_l = self.lin(x)
+        row, col = edge_index
         x_row = x_l[row]
         x_col = x_l[col]
         feat_cat = torch.cat([x_row, x_col], dim=-1)
-        e = (feat_cat * self.att).sum(dim=-1)
+        e = (feat_cat * self.att).sum(dim=-1)  # raw unnormalized attention (E,)
         if edge_weight is not None:
             ew = edge_weight.view(-1).to(e.dtype)
-            e = e * ew
+            if self.edge_mode == 'mul':
+                # prevent zeroing out completely if ew ~ 0: use 1 + alpha*ew or simply multiply if ew in [0,1]
+                e = e * ew
+            elif self.edge_mode == 'add':
+                e = e + self.edge_coef * ew
         alpha = softmax(self.leaky_relu(e), col)
         out = self.propagate(edge_index, x=x_l, alpha=alpha)
         if self.bias is not None:
@@ -190,6 +310,9 @@ class EdgeGATConv(MessagePassing):
 
     def message(self, x_j, alpha):
         return x_j * alpha.view(-1, 1)
+
+
+
 
 # ---------------------- Models ----------------------
 
@@ -279,40 +402,56 @@ class LSTM_GCN_Imputer(nn.Module):
 
 # ---------------------- Training & Demo ----------------------
 
-# def train_demo(csv_path='/Users/kathrinebovkun/PycharmProjects/experiments/data/Industrial_fault_detection.csv',
+# def train_demo(csv_path='/Users/kathrinebovkun/PycharmProjects/experiments/data/Industrial_fault_detection_with_nans.csv',
 #                seq_len=8, batch_size=32, epochs=8, use_gat=True,
 #                k_neighbors=3, device=None):
 #     if device is None:
 #         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 #     print('Device:', device)
 
+#     # === Load & scale ===
 #     df, X_raw, cols = load_csv(csv_path)
 #     T, Fi = X_raw.shape
 #     print(f'Loaded CSV with T={T}, F={Fi} columns')
 
-#     mins, maxs = compute_feature_minmax(X_raw)
-#     X_scaled = minmax_scale_with_nan(X_raw, mins, maxs)
+#     # === Split train/test by time ===
+#     train_size = int(0.8 * T)
+#     train_size = 855
 
-#     corr = compute_correlation_matrix(X_scaled)
-#     edge_index, edge_weight = build_edge_index_from_similarity(corr, k=k_neighbors)
-#     print('Built graph:', edge_index.shape, edge_weight.shape)
+#     train_data_raw = X_raw[:train_size]
+#     test_data_raw = X_raw[train_size:]
 
-#     dataset = TimeWindowsDataset(X_scaled, seq_len=seq_len)
-#     loader = DataLoader(dataset, batch_size=batch_size, shuffle=True, collate_fn=collate_windows)
+#     mins_tr, maxs_tr = compute_feature_minmax(train_data_raw)
+#     train_data = minmax_scale_with_nan(train_data_raw, mins_tr, maxs_tr)
 
+#     test_data = minmax_scale_with_nan(test_data_raw, mins_tr, maxs_tr)
+#     print(f"Train data shape: {train_data.shape}, Test data shape: {test_data.shape}")
+
+#     # === Build graph only on train data ===
+#     corr_train = compute_correlation_matrix(train_data)
+#     edge_index_train, edge_weight_train = build_edge_index_from_similarity(corr_train, k=k_neighbors)
+#     print('Built graph:', edge_index_train.shape, edge_weight_train.shape)
+
+#     # === Datasets and loaders ===
+#     train_dataset = TimeWindowsDataset(train_data, seq_len=seq_len)
+#     test_dataset = TimeWindowsDataset(test_data, seq_len=seq_len)
+#     train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, collate_fn=collate_windows)
+#     test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, collate_fn=collate_windows)
+
+#     # === Model ===
 #     if use_gat:
 #         model = LSTM_GAT_Imputer(seq_len=seq_len, num_nodes=Fi, lstm_hidden=64, gnn_hidden=64).to(device)
 #     else:
 #         model = LSTM_GCN_Imputer(seq_len=seq_len, num_nodes=Fi, lstm_hidden=64, gnn_hidden=64).to(device)
-
 #     opt = torch.optim.Adam(model.parameters(), lr=1e-3)
-
 #     mask_prob = 0.2
+
+#     # === Training ===
 #     for epoch in range(epochs):
 #         model.train()
 #         total_loss = 0.0
 #         n_batches = 0
-#         for batch in loader:
+#         for batch in train_loader:
 #             batch = batch.to(device)
 #             B = batch.shape[0]
 #             last = batch[:, -1, :]
@@ -321,77 +460,116 @@ class LSTM_GCN_Imputer(nn.Module):
 #             mask_pred = (rnd < mask_prob) & known_last
 #             masked_batch = batch.clone()
 #             masked_batch[:, -1, :][mask_pred] = float('nan')
-#             preds = model(masked_batch, edge_index, edge_weight)
+#             preds = model(masked_batch, edge_index_train, edge_weight_train)
 #             if mask_pred.sum() == 0:
 #                 continue
 #             y_true = last[mask_pred]
 #             y_pred = preds[mask_pred]
 #             mse = F.mse_loss(y_pred, y_true)
-#             lower = 0.0; upper = 1.0
-#             over = F.relu(y_pred - upper)
-#             under = F.relu(lower - y_pred)
-#             range_penalty = (over.mean() + under.mean())
-#             loss = mse + 5.0 * range_penalty
+#             over = F.relu(y_pred - 1.0)
+#             under = F.relu(0.0 - y_pred)
+#             loss = mse + 5.0 * (over.mean() + under.mean())
 #             opt.zero_grad()
 #             loss.backward()
 #             opt.step()
 #             total_loss += loss.item()
 #             n_batches += 1
 #         avg_loss = total_loss / max(1, n_batches)
-#         print(f'Epoch {epoch+1}/{epochs} avg_loss={avg_loss:.6f}')
+#         print(f'Epoch {epoch+1}/{epochs} train_loss={avg_loss:.6f}')
 
-#     # Imputation across full series
+#         # === Validation ===
+#         model.eval()
+#         with torch.no_grad():
+#             val_loss = 0.0
+#             n_val = 0
+#             for batch in test_loader:
+#                 batch = batch.to(device)
+#                 B = batch.shape[0]
+#                 last = batch[:, -1, :]
+#                 known_last = ~torch.isnan(last)
+#                 rnd = torch.rand_like(last)
+#                 mask_pred = (rnd < mask_prob) & known_last
+#                 masked_batch = batch.clone()
+#                 masked_batch[:, -1, :][mask_pred] = float('nan')
+#                 preds = model(masked_batch, edge_index_train, edge_weight_train)
+#                 if mask_pred.sum() == 0:
+#                     continue
+#                 y_true = last[mask_pred]
+#                 y_pred = preds[mask_pred]
+#                 mse = F.mse_loss(y_pred, y_true)
+#                 val_loss += mse.item()
+#                 n_val += 1
+#             avg_val_loss = val_loss / max(1, n_val)
+#         print(f'           val_loss={avg_val_loss:.6f}')
+
+#     # === Imputation across full series ===
 #     model.eval()
-#     X_filled_scaled = X_scaled.copy()
+#     X_test_filled_scaled = test_data.copy()
 #     with torch.no_grad():
-#         for idx in range(len(dataset)):
-#             w = dataset[idx]
-#             w_tensor = w.unsqueeze(0).to(device)
-#             preds = model(w_tensor, edge_index, edge_weight)
+#         for t in range(seq_len, test_data.shape[0]):
+#             window = X_test_filled_scaled[t-seq_len:t, :].copy()
+#             window_tensor = torch.tensor(window, dtype=torch.float).unsqueeze(0).to(device)
+#             preds = model(window_tensor, edge_index_train, edge_weight_train)
 #             preds = preds.squeeze(0).cpu().numpy()
-#             preds_clamped = np.clip(preds, 0.0, 1.0)
-#             t_last = idx + seq_len - 1
 #             for f in range(Fi):
-#                 if np.isnan(X_filled_scaled[t_last, f]):
-#                     X_filled_scaled[t_last, f] = preds_clamped[f]
-#     X_imputed = inverse_minmax_scale(X_filled_scaled, mins, maxs)
-#     out_path = '/Users/kathrinebovkun/PycharmProjects/experiments/data/imputed_result.csv'
-#     pd.DataFrame(X_imputed, columns=cols).to_csv(out_path, index=False)
-#     print('Saved imputed CSV to', out_path)
+#                 if np.isnan(X_test_filled_scaled[t, f]):
+#                     X_test_filled_scaled[t, f] = preds[f]
 
-def train_demo(csv_path='/Users/kathrinebovkun/PycharmProjects/experiments/data/Industrial_fault_detection.csv',
+#     X_test_imputed = inverse_minmax_scale(X_test_filled_scaled, mins_tr, maxs_tr)
+#     out_test_path = '/Users/kathrinebovkun/PycharmProjects/experiments/data/imputed_test_result.csv'
+#     pd.DataFrame(X_test_imputed, columns=cols).to_csv(out_test_path, index=False)
+#     print('Saved imputed test CSV to', out_test_path)
+
+
+def train_demo(csv_path='/Users/kathrinebovkun/PycharmProjects/experiments/data/Industrial_fault_detection_with_nans.csv',
                seq_len=8, batch_size=32, epochs=8, use_gat=True,
-               k_neighbors=3, device=None):
+               k_neighbors=3, device=None, trend_window=72):
     if device is None:
         device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print('Device:', device)
 
-    # === Load & scale ===
-    df, X_raw, cols = load_csv(csv_path)
+    # === Load raw data ===
+    df, X_raw, cols = load_csv(csv_path)              # X_raw shape (T, Fi), may contain NaN
     T, Fi = X_raw.shape
     print(f'Loaded CSV with T={T}, F={Fi} columns')
 
-    mins, maxs = compute_feature_minmax(X_raw)
-    X_scaled = minmax_scale_with_nan(X_raw, mins, maxs)
+    # === Split train/test by time (deterministic) ===
+    train_size = 855  # as you requested (first 855 rows for train)
+    assert train_size < T, "train_size must be < total rows"
+    # We'll keep an overlap of seq_len for building first test window:
+    # test_data_raw contains last seq_len of train + actual test portion
+    test_data_raw = X_raw[train_size - seq_len:]     # shape = seq_len + (T - train_size)
+    train_data_raw = X_raw[:train_size]              # shape = train_size
 
-    # === Build graph (global for all data) ===
-    corr = compute_correlation_matrix(X_scaled)
-    edge_index, edge_weight = build_edge_index_from_similarity(corr, k=k_neighbors)
-    print('Built graph:', edge_index.shape, edge_weight.shape)
+    # === Compute rolling trend on the full raw series (uses only past values for each t) ===
+    # We compute rolling mean on the full X_raw to ensure trend at each timestamp uses only past/current values.
+    df_full = pd.DataFrame(X_raw, columns=cols)
+    # rolling(window=trend_window, min_periods=1) — first values use smaller window
+    trend_full = df_full.rolling(window=trend_window, min_periods=1).mean().values
+    # Split trend arrays consistently with train/test split (and overlap)
+    trend_train = trend_full[:train_size]                      # (train_size, Fi)
+    trend_test_full = trend_full[train_size - seq_len:]        # (seq_len + test_size, Fi)
 
-    # === Split train/test by time ===
-    train_size = 850
-    test_size = 150
-    assert train_size + test_size <= T, "train+test must be <= total rows"
+    # === Detrend (raw - trend) ===
+    # subtract elementwise; NaNs propagate (if a value is NaN, result stays NaN)
+    train_detrended_raw = train_data_raw - trend_train
+    test_detrended_raw = test_data_raw - trend_test_full
 
-    train_data = X_scaled[:train_size]
-    test_data = X_scaled[train_size - seq_len:]  # include overlap for window continuity
+    # === Compute min/max on detrended TRAIN only, then scale both train/test by those mins/maxs ===
+    mins_tr, maxs_tr = compute_feature_minmax(train_detrended_raw)
+    train_data = minmax_scale_with_nan(train_detrended_raw, mins_tr, maxs_tr)
+    test_data = minmax_scale_with_nan(test_detrended_raw, mins_tr, maxs_tr)
 
-    print(f"Train data shape: {train_data.shape}, Test data shape: {test_data.shape}")
+    print(f"Train detrended shape: {train_data.shape}, Test detrended shape (with overlap): {test_data.shape}")
 
+    # === Build graph on detrended TRAIN data (correlation-based) ===
+    corr_train = compute_correlation_matrix(train_detrended_raw)
+    edge_index_train, edge_weight_train = build_edge_index_from_similarity(corr_train, k=k_neighbors)
+    print('Built graph on train:', edge_index_train.shape, edge_weight_train.shape)
+
+    # === Datasets & loaders ===
     train_dataset = TimeWindowsDataset(train_data, seq_len=seq_len)
     test_dataset = TimeWindowsDataset(test_data, seq_len=seq_len)
-
     train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True, collate_fn=collate_windows)
     test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False, collate_fn=collate_windows)
 
@@ -400,31 +578,28 @@ def train_demo(csv_path='/Users/kathrinebovkun/PycharmProjects/experiments/data/
         model = LSTM_GAT_Imputer(seq_len=seq_len, num_nodes=Fi, lstm_hidden=64, gnn_hidden=64).to(device)
     else:
         model = LSTM_GCN_Imputer(seq_len=seq_len, num_nodes=Fi, lstm_hidden=64, gnn_hidden=64).to(device)
-
     opt = torch.optim.Adam(model.parameters(), lr=1e-3)
     mask_prob = 0.2
 
-    # === Training ===
+    # === Training loop ===
     for epoch in range(epochs):
         model.train()
         total_loss = 0.0
         n_batches = 0
         for batch in train_loader:
-            batch = batch.to(device)
-            B = batch.shape[0]
+            batch = batch.to(device)                        # (B, seq_len, Fi) scaled detrended
             last = batch[:, -1, :]
             known_last = ~torch.isnan(last)
             rnd = torch.rand_like(last)
             mask_pred = (rnd < mask_prob) & known_last
             masked_batch = batch.clone()
             masked_batch[:, -1, :][mask_pred] = float('nan')
-            preds = model(masked_batch, edge_index, edge_weight)
+            preds = model(masked_batch, edge_index_train, edge_weight_train)
             if mask_pred.sum() == 0:
                 continue
             y_true = last[mask_pred]
             y_pred = preds[mask_pred]
             mse = F.mse_loss(y_pred, y_true)
-            # range penalty
             over = F.relu(y_pred - 1.0)
             under = F.relu(0.0 - y_pred)
             loss = mse + 5.0 * (over.mean() + under.mean())
@@ -436,21 +611,20 @@ def train_demo(csv_path='/Users/kathrinebovkun/PycharmProjects/experiments/data/
         avg_loss = total_loss / max(1, n_batches)
         print(f'Epoch {epoch+1}/{epochs} train_loss={avg_loss:.6f}')
 
-        # === Validation (on test set) ===
+        # === Validation on test windows (no shuffle) ===
         model.eval()
         with torch.no_grad():
             val_loss = 0.0
             n_val = 0
             for batch in test_loader:
                 batch = batch.to(device)
-                B = batch.shape[0]
                 last = batch[:, -1, :]
                 known_last = ~torch.isnan(last)
                 rnd = torch.rand_like(last)
                 mask_pred = (rnd < mask_prob) & known_last
                 masked_batch = batch.clone()
                 masked_batch[:, -1, :][mask_pred] = float('nan')
-                preds = model(masked_batch, edge_index, edge_weight)
+                preds = model(masked_batch, edge_index_train, edge_weight_train)
                 if mask_pred.sum() == 0:
                     continue
                 y_true = last[mask_pred]
@@ -461,29 +635,42 @@ def train_demo(csv_path='/Users/kathrinebovkun/PycharmProjects/experiments/data/
             avg_val_loss = val_loss / max(1, n_val)
         print(f'           val_loss={avg_val_loss:.6f}')
 
-    # === Imputation across full series ===
+    # === Imputation across TEST series (we operate on detrended+scaled test_data) ===
     model.eval()
-    X_test_filled_scaled = test_data.copy()
+    X_test_filled_scaled = test_data.copy()   # working copy (shape = seq_len + test_size, Fi)
     with torch.no_grad():
-        for t in range(seq_len, test_data.shape[0]):  # начинаем с seq_len
-            # формируем окно из последних seq_len значений
+        # iterate over windows inside test_data (first window includes last train rows via overlap)
+        for t in range(seq_len, X_test_filled_scaled.shape[0]):
             window = X_test_filled_scaled[t-seq_len:t, :].copy()
-            # заменяем NaN в окне предыдущими предсказаниями
             window_tensor = torch.tensor(window, dtype=torch.float).unsqueeze(0).to(device)
-            preds = model(window_tensor, edge_index, edge_weight)
-            preds = preds.squeeze(0).cpu().numpy()
-            # заполняем NaN в текущем шаге только там, где отсутствуют данные
+            preds = model(window_tensor, edge_index_train, edge_weight_train)
+            preds = preds.squeeze(0).cpu().numpy()   # predicted scaled detrended values for time t (Fi,)
+            # fill only NaNs at time t (in scaled detrended space)
             for f in range(Fi):
                 if np.isnan(X_test_filled_scaled[t, f]):
                     X_test_filled_scaled[t, f] = preds[f]
 
-    # обратное масштабирование
-    X_test_imputed = inverse_minmax_scale(X_test_filled_scaled, mins, maxs)
-    out_test_path = '/Users/kathrinebovkun/PycharmProjects/experiments/data/imputed_test_result.csv'
-    pd.DataFrame(X_test_imputed, columns=cols).to_csv(out_test_path, index=False)
-    print('Saved imputed test CSV to', out_test_path)
+    # === Inverse min-max (detrended -> original detrended scale) ===
+    detrended_imputed = inverse_minmax_scale(X_test_filled_scaled, mins_tr, maxs_tr)  # shape seq_len + test_size
+
+    # === Add trend back to retrieve original-scale values ===
+    # trend_test_full corresponds to the same rows as test_data_raw (seq_len + test_size)
+    # final_test = detrended_imputed + trend_test_full
+    final_test_with_trend = detrended_imputed + trend_test_full  # (seq_len + test_size, Fi)
+
+    # === Extract actual test-time slice (exclude the initial overlap of seq_len rows) ===
+    final_test_actual = final_test_with_trend[seq_len:, :]   # shape (test_size, Fi)
+    original_test_raw = X_raw[train_size:, :]               # (test_size, Fi)
+
+    # === Compose final test output: keep original observed values, replace NaNs by imputed ===
+    imputed_test_output = original_test_raw.copy()
+    nan_mask = np.isnan(imputed_test_output)
+    imputed_test_output[nan_mask] = final_test_actual[nan_mask]
+
+    out_test_path = '/Users/kathrinebovkun/PycharmProjects/experiments/data/imputed_test_result_with_trend.csv'
+    pd.DataFrame(imputed_test_output, columns=cols).to_csv(out_test_path, index=False)
+    print('Saved imputed test CSV with trend re-added to', out_test_path)
 
 
 if __name__ == '__main__':
-    # Example run — set use_gat=False to use GCN variant
-    train_demo(csv_path='/Users/kathrinebovkun/PycharmProjects/experiments/data/Industrial_fault_detection.csv', seq_len=8, batch_size=32, epochs=8, use_gat=True)
+    train_demo(csv_path='/Users/kathrinebovkun/PycharmProjects/experiments/data/Industrial_fault_detection_with_nans.csv', seq_len=16, batch_size=64, epochs=150, use_gat=True)
