@@ -20,3 +20,4 @@ venv/
 .DS_Store
 config.py
 .csv
+__init.py__
