@@ -18,3 +18,5 @@ venv/
 *.iml
 *.log
 .DS_Store
+config.py
+.csv
